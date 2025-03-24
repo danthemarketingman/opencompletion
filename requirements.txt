@@ -24,3 +24,5 @@ pyyaml
 # if you want to plot charts.
 matplotlib
 numpy
+transformers
+torch
