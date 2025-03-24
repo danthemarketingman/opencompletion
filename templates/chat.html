@@ -1,857 +1,128 @@
-{% extends "base.html" %}
-
-{% block title %}Chatroom{% endblock %}
-
-{% block content %}
-
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Chat Room: {{ room_name }}</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f7f7f7;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+        }
+        #chat-container {
+            background-color: #ffffff;
+            border-radius: 5px;
+            padding: 15px;
+            width: 100%;
+            max-width: 600px;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+        }
+        #chat {
+            height: 300px;
+            overflow-y: scroll;
+            border: 1px solid #e1e1e1;
+            border-radius: 5px;
+            padding: 10px;
+            margin-bottom: 10px;
+        }
+        #message {
+            width: 98%;
+            border: 1px solid #e1e1e1;
+            border-radius: 5px;
+            padding: 5px;
+        }
+        #user-lists {
+            margin-top: 20px;
+        }
+        #active-users-list, #inactive-users-list {
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
     <div id="chat-container">
-        <!-- Chat area where messages will be displayed -->
+        <h2>Chat Room: {{ room_name }}</h2>
         <div id="chat"></div>
-        <!-- Form for sending messages -->
         <form id="message-form">
             <textarea id="message" rows="4" placeholder="Type your message..."></textarea>
+            <button type="submit">Send</button>
         </form>
     </div>
 
-    <div class="utility-belt">
-        <div class="download-links">
-            History
-            <a href="/download_chat_history?room_name={{ room_name }}" download="{{ room_name }}.json">JSON</a> or
-            <a href="/download_chat_history_md?room_name={{ room_name }}" download="{{ room_name }}.md">Markdown</a>
+    <div id="user-lists">
+        <div id="active-users-list">
+            <h3>Active Users</h3>
+            <ul id="active-users"></ul>
         </div>
-        <br>
-        <div>
-            <label for="model-select">Model</label>
-            <select id="model-select">
-                <option value="None">None</option>
-            </select>
+        <div id="inactive-users-list">
+            <h3>Inactive Users</h3>
+            <ul id="inactive-users"></ul>
         </div>
-        <div>
-            <label for="voice-select">Voice</label>
-            <select id="voice-select">
-                <option value="onyx">Onyx</option>
-                <option value="alloy">Alloy</option>
-                <option value="echo">Echo</option>
-                <option value="fable">Fable</option>
-                <option value="nova">Nova</option>
-                <option value="shimmer">Shimmer</option>
-            </select>
-        </div>
-       <div id="user-lists">
-           <div id="active-users-list">
-               <h3>Active Users</h3>
-               <ul id="active-users">
-                   <!-- Active users will be dynamically populated here -->
-               </ul>
-           </div>
-           <div id="inactive-users-list">
-               <h3>Inactive Users</h3>
-               <ul id="inactive-users">
-                   <!-- Inactive users will be dynamically populated here -->
-               </ul>
-           </div>
-       </div>
-
     </div>
 
-<script>
-// Constants
-const API_KEY = "dummy-api-key";
-const TTS_API_URL = "https://speech.ai.unturf.com/v1/audio/speech";
-const urlParams = new URLSearchParams(window.location.search);
-const username = urlParams.get("username");
-const room_name = "{{ room_name }}";
+    <script>
+        const socket = io();
+        const room_name = "{{ room_name }}";
+        const username = "{{ username }}";
 
-// Global constants for valid voices
-const VALID_VOICES = ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'];
+        socket.emit("join", { "room_name": room_name, "username": username });
 
-// Configuration for DOMPurify to specify which tags and attributes are allowed
-const dompurify_config = {
-  ADD_TAGS: ["iframe", "img"],
-  FORBID_TAGS: ["form"], 
-  ALLOWED_ATTR: [
-    "src", "width", "height", "frameborder", "allowfullscreen", 
-    "alt", "class", "title", "style"
-  ]
-};
+        socket.on("previous_messages", (data) => {
+            const chat = document.getElementById("chat");
+            chat.innerHTML += `<p><b>${data.username}:</b> ${data.content}</p>`;
+        });
 
-// keeping track of scrolling to prevent autoscrolling.
-let userHasScrolledUp = false;
-let currentAudio = null; // To keep track of the currently playing audio
-let audioCache = {}; // Cache to store audio blobs
+        socket.on("chat_message", (data) => {
+            const chat = document.getElementById("chat");
+            chat.innerHTML += `<p><b>${data.username}:</b> ${data.content}</p>`;
+            chat.scrollTop = chat.scrollHeight;
+        });
 
-// Flag to prevent mutual updates on desktop/mobile
-let isSyncingDropdowns = false;
+        socket.on("active_users", (data) => {
+            const activeUserList = document.getElementById("active-users");
+            const inactiveUserList = document.getElementById("inactive-users");
+            activeUserList.innerHTML = '';
+            inactiveUserList.innerHTML = '';
+            data.active_users.forEach(user => {
+                const li = document.createElement("li");
+                li.textContent = user;
+                activeUserList.appendChild(li);
+            });
+            data.inactive_users.forEach(user => {
+                const li = document.createElement("li");
+                li.textContent = user;
+                inactiveUserList.appendChild(li);
+            });
+        });
 
-// Function to sanitize the username
-function sanitizeUsername(username) {
-    // Split the username on commas and take the first part.
-    // The backend denormalizes the user list in the room table via csv.
-    return username.split(',')[0].trim();
-}
+        document.getElementById("message-form").addEventListener("submit", (e) => {
+            e.preventDefault();
+            sendMessage();
+        });
 
-// Function to sync dropdowns and update the query string
-function syncDropdownsAndQueryString() {
-    const sanitizedUsername = sanitizeUsername(username);
-    const modelSelectDesktop = document.getElementById("model-select");
-    const voiceSelectDesktop = document.getElementById("voice-select");
-    const modelSelectMobile = document.getElementById("model-select-mobile");
-    const voiceSelectMobile = document.getElementById("voice-select-mobile");
+        document.getElementById("message").addEventListener("keydown", function(e) {
+            if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
 
-    // Determine the current model and voice from any dropdown
-    const currentModel = modelSelectDesktop.value;
-    const currentVoice = VALID_VOICES.includes(voiceSelectDesktop.value) ? voiceSelectDesktop.value : 'onyx';
-
-    // Sync both desktop and mobile dropdowns
-    modelSelectDesktop.value = currentModel;
-    voiceSelectDesktop.value = currentVoice;
-    modelSelectMobile.value = currentModel;
-    voiceSelectMobile.value = currentVoice;
-
-    const newUrl = new URL(window.location.href);
-    newUrl.searchParams.set("username", sanitizedUsername);
-    newUrl.searchParams.set("model", currentModel);
-    newUrl.searchParams.set("voice", currentVoice);
-    window.history.replaceState({}, '', newUrl);
-}
-
-document.addEventListener('DOMContentLoaded', (event) => {
-    const chatContainer = document.getElementById("chat");
-    const modelSelectDesktop = document.getElementById("model-select");
-    const voiceSelectDesktop = document.getElementById("voice-select");
-    const modelSelectMobile = document.getElementById("model-select-mobile");
-    const voiceSelectMobile = document.getElementById("voice-select-mobile");
-
-    // Function to populate the dropdown
-    function populateModelDropdown(models) {
-        // Clear options starting from index 1 (preserve "None" at index 0)
-        while (modelSelectDesktop.options.length > 1) {
-            modelSelectDesktop.remove(1);
+        function sendMessage() {
+            const message = document.getElementById("message").value.trim();
+            if (message !== "") {
+                socket.emit("chat_message", {
+                    "room_name": room_name,
+                    "username": username,
+                    "message": message
+                });
+                document.getElementById("message").value = "";
+            }
         }
-        // Append new model options
-        models.forEach(modelId => {
-            const option = document.createElement('option');
-            option.value = modelId;
-            option.textContent = modelId;
-            modelSelectDesktop.appendChild(option);
-        });
-        // Set initial value from URL
-        const urlParams = new URLSearchParams(window.location.search);
-        const initialModel = urlParams.get("model") || "None";
-        modelSelectDesktop.value = initialModel;
-    }
-
-    // Memoization with localStorage (1-minute cache)
-    const cacheKey = 'modelList';
-    const cacheExpirationKey = 'modelListExpiration';
-    const cacheDuration = 60 * 1000; // 1 minute in milliseconds
-
-    const cachedData = localStorage.getItem(cacheKey);
-    const cachedExpiration = localStorage.getItem(cacheExpirationKey);
-
-    if (cachedData && cachedExpiration && Date.now() < parseInt(cachedExpiration)) {
-        // Use cached data if it exists and hasn't expired
-        const models = JSON.parse(cachedData);
-        populateModelDropdown(models);
-    } else {
-        // Fetch from backend and update cache
-        fetch('/models')
-            .then(response => response.json())
-            .then(data => {
-                const models = data.models;
-                populateModelDropdown(models);
-                // Store in localStorage with expiration
-                localStorage.setItem(cacheKey, JSON.stringify(models));
-                localStorage.setItem(cacheExpirationKey, Date.now() + cacheDuration);
-            })
-            .catch(error => console.error("Error fetching models:", error));
-    }
-
-    chatContainer.addEventListener('scroll', () => {
-        const distanceFromBottom = chatContainer.scrollHeight - chatContainer.scrollTop - chatContainer.clientHeight;
-        userHasScrolledUp = distanceFromBottom > 5;
-    });
-
-    // Set initial model and voice from query string
-    const initialModel = urlParams.get("model") || "None";
-    const initialVoice = urlParams.get("voice") || "onyx";
-    modelSelectDesktop.value = initialModel;
-    voiceSelectDesktop.value = initialVoice;
-    modelSelectMobile.value = initialModel;
-    voiceSelectMobile.value = initialVoice;
-
-    // Add event listeners for desktop dropdowns
-    modelSelectDesktop.addEventListener("change", () => {
-        if (isSyncingDropdowns) return;
-        isSyncingDropdowns = true;
-        modelSelectMobile.value = modelSelectDesktop.value;
-        syncDropdownsAndQueryString();
-        isSyncingDropdowns = false;
-    });
-
-    voiceSelectDesktop.addEventListener("change", () => {
-        if (isSyncingDropdowns) return;
-        isSyncingDropdowns = true;
-        voiceSelectMobile.value = voiceSelectDesktop.value;
-        syncDropdownsAndQueryString();
-        isSyncingDropdowns = false;
-    });
-
-    // Add event listeners for mobile dropdowns
-    modelSelectMobile.addEventListener("change", () => {
-        if (isSyncingDropdowns) return;
-        isSyncingDropdowns = true;
-        modelSelectDesktop.value = modelSelectMobile.value;
-        syncDropdownsAndQueryString();
-        isSyncingDropdowns = false;
-    });
-
-    voiceSelectMobile.addEventListener("change", () => {
-        if (isSyncingDropdowns) return;
-        isSyncingDropdowns = true;
-        voiceSelectDesktop.value = voiceSelectMobile.value;
-        syncDropdownsAndQueryString();
-        isSyncingDropdowns = false;
-    });
-});
-
-// Socket event when the user connects
-socket.on("connect", () => {
-    // Sanitize the username before joining
-    const sanitizedUsername = sanitizeUsername(username);
-    socket.emit("join", {"username": sanitizedUsername, "room_name": room_name});
-    // Sync dropdowns and update the query string
-    syncDropdownsAndQueryString();
-});
-
-// Function to update the active and inactive user lists in the DOM
-function updateUserLists(activeUsers, inactiveUsers) {
-    const activeUserListElement = document.getElementById("active-users");
-    const inactiveUserListElement = document.getElementById("inactive-users");
-    const activeUserListElementMobile = document.getElementById("active-users-mobile");
-    const inactiveUserListElementMobile = document.getElementById("inactive-users-mobile");
-
-    activeUserListElement.innerHTML = ''; // Clear the current list
-    inactiveUserListElement.innerHTML = ''; // Clear the current list
-    activeUserListElementMobile.innerHTML = ''; // Clear the current list (mobile)
-    inactiveUserListElementMobile.innerHTML = ''; // Clear the current list (mobile)
-
-    // Populate the list with active users (desktop)
-    activeUsers.forEach(username => {
-        const userItem = document.createElement("li");
-        userItem.textContent = username;
-        activeUserListElement.appendChild(userItem);
-    });
-
-    // Populate the list with inactive users (desktop)
-    inactiveUsers.forEach(username => {
-        const userItem = document.createElement("li");
-        userItem.textContent = username;
-        inactiveUserListElement.appendChild(userItem);
-    });
-
-    // Populate the list with active users (mobile)
-    activeUsers.forEach(username => {
-        const userItemMobile = document.createElement("li");
-        userItemMobile.textContent = username;
-        activeUserListElementMobile.appendChild(userItemMobile);
-    });
-
-    // Populate the list with inactive users (mobile)
-    inactiveUsers.forEach(username => {
-        const userItemMobile = document.createElement("li");
-        userItemMobile.textContent = username;
-        inactiveUserListElementMobile.appendChild(userItemMobile);
-    });
-}
-
-// Update user lists whenever the event is received
-socket.on("active_users", (data) => {
-    updateUserLists(data.active_users, data.inactive_users);
-});
-
-// Function to handle sending the message
-function sendMessage() {
-    const message = document.getElementById("message").value;
-    const model = document.getElementById("model-select").value;
-    let messageToSend = message.trim();
-
-    if (messageToSend !== "") {  // Ensure we're not sending empty messages
-        socket.emit("chat_message", {
-            "username": username,
-            "message": messageToSend,
-            "model": model,  // Pass model as a separate attribute
-            "room_name": room_name
-        });
-        document.getElementById("message").value = "";
-    }
-}
-
-// Function to handle deleting a message
-function deleteMessage(messageId, room_name) {
-    socket.emit("delete_message", {"message_id": messageId, "room_name": room_name});
-}
-
-// Event listener for form submission to send a message
-document.getElementById("message-form").addEventListener("submit", (e) => {
-    e.preventDefault();
-    sendMessage();
-});
-
-// Event listener for the Enter key press in the textarea to send a message
-document.getElementById("message").addEventListener("keydown", function(e) {
-    if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
-        sendMessage();
-    }
-});
-
-// Socket event for updating the room title
-socket.on("update_room_title", (data) => {
-    document.title = data.title; // Update the window's title
-});
-
-// Socket event to update the room title in the sidebar.
-socket.on('update_room_list', function(updatedRoom) {
-    // Find the room list item by its data-room-id attribute
-    const roomListItem = document.querySelector(`#rooms-list li[data-room-id="${updatedRoom.id}"]`);
-
-    if (roomListItem) {
-        // Update the room list item's content with the new title
-        roomListItem.innerHTML = `<b>${updatedRoom.name}</b> ${updatedRoom.title ? '<br />' + updatedRoom.title : ''}`;
-    }
-});
-
-// Function to read text using TTS
-async function speakText(text, playButton, messageId) {
-    const voice = document.getElementById("voice-select").value;
-    const cacheKey = `${messageId}-${voice}`; // Unique cache key for each message and voice
-
-    // Clean the text to include only alphanumeric characters, spaces, and key punctuation
-    const cleanText = text.replace(/[^a-zA-Z0-9\s.,!?]/g, '');
-
-    try {
-        // Check if the audio is already cached
-        if (audioCache[cacheKey]) {
-            const audio = audioCache[cacheKey];
-            toggleAudioPlayback(audio, playButton);
-            return;
-        }
-
-        // Set button to processing state
-        playButton.textContent = "Processing...";
-        playButton.disabled = true;
-
-        const response = await fetch(TTS_API_URL, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${API_KEY}`
-            },
-            body: JSON.stringify({
-                model: 'tts-1',
-                voice: voice,
-                input: cleanText // Use the cleaned text
-            })
-        });
-
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
-
-        const audioBlob = await response.blob();
-        const audioUrl = URL.createObjectURL(audioBlob);
-        const audio = new Audio(audioUrl);
-        audio.playbackRate = 0.9;
-
-        // Cache the audio only after it is successfully created
-        audioCache[cacheKey] = audio;
-
-        // Enable button and change text to "Pause"
-        playButton.disabled = false;
-        toggleAudioPlayback(audio, playButton);
-    } catch (error) {
-        console.error('Error in TTS:', error);
-        playButton.textContent = "Play"; // Reset button text on error
-        playButton.disabled = false;
-    }
-}
-
-// Function to toggle audio playback
-function toggleAudioPlayback(audio, playButton) {
-    if (currentAudio && currentAudio !== audio) {
-        currentAudio.pause();
-        currentAudio.currentTime = 0;
-        currentAudio.playButton.textContent = "Play";
-    }
-
-    if (audio.paused) {
-        audio.play();
-        playButton.textContent = "Pause";
-    } else {
-        audio.pause();
-        playButton.textContent = "Play";
-    }
-
-    currentAudio = audio;
-    currentAudio.playButton = playButton;
-
-    audio.onended = () => {
-        playButton.textContent = "Play";
-    };
-}
-
-// Socket event for receiving a new message
-socket.on("chat_message", (data) => {
-    const messageWrapper = document.createElement("div");
-    messageWrapper.className = "message-wrapper";
-    messageWrapper.id = "message-" + data.id;
-
-    const newMessage = document.createElement("div");
-    newMessage.className = "message-content";
-
-    // Check if the username is present and prepend it to the message content
-    const messageContent = data.username ? `**${data.username}:**\n\n${data.content}` : data.content;
-
-    // Check if the message starts with a base64 image tag
-    if (data.content.startsWith('<img src="data:image/jpeg;base64')) {
-        // Directly assign the message as innerHTML if it starts with a base64 image
-        newMessage.innerHTML = data.content;
-    } else {
-        // Otherwise, sanitize and process the message with marked
-        newMessage.innerHTML = DOMPurify.sanitize(marked.marked(messageContent), dompurify_config);
-    }
-
-    // Check if the message has an id which means we can delete it.
-    if (data.id) {
-        newMessage.dataset.rawMarkdown = data.content;
-
-        // Create a container for the buttons
-        const buttonContainer = document.createElement("div");
-        buttonContainer.className = "button-container";
-
-        // Create the delete button
-        const deleteButton = document.createElement("button");
-        deleteButton.innerHTML = "x";
-        deleteButton.onclick = () => deleteMessage(data.id, room_name);
-        buttonContainer.appendChild(deleteButton);
-
-        // Create the edit button
-        const editButton = document.createElement("button");
-        editButton.textContent = "Edit";
-        editButton.className = "edit-button";
-        editButton.onclick = () => editMessage(data.id, newMessage, data.content);
-        buttonContainer.appendChild(editButton);
-
-        // Create the play button for TTS
-        const playButton = document.createElement("button");
-        playButton.textContent = "Play";
-        playButton.onclick = () => speakText(data.content, playButton, data.id);
-        buttonContainer.appendChild(playButton);
-
-        messageWrapper.appendChild(buttonContainer);
-    }
-
-    messageWrapper.appendChild(newMessage);
-
-    document.getElementById("chat").appendChild(messageWrapper);
-
-    // Apply syntax highlighting to code blocks within the message
-    newMessage.querySelectorAll("pre code").forEach((block) => {
-        addCopyButtonToCodeBlock(block);
-        truncateCodeBlock(block);
-        hljs.highlightElement(block);
-        addLineNumbers(block);
-    });
-
-    // Scroll to the bottom of the chat container to show the new message.
-    if (data.id) {
-        document.getElementById("chat").scrollTop = document.getElementById("chat").scrollHeight;
-    }
-});
-
-// Socket event for receiving previous messages
-socket.on("previous_messages", (data) => {
-
-    if (document.getElementById("message-" + data.id)) {
-        // If it exists, skip appending it
-        return;
-    }
-
-    const messageWrapper = document.createElement("div");
-    messageWrapper.className = "message-wrapper";
-    messageWrapper.id = "message-" + data.id;
-
-    const newMessage = document.createElement("div");
-    newMessage.className = "message-content";
-
-    // Check if the message contains a base64 image
-    if (data.content.startsWith('<img src="data:image/jpeg;base64')) {
-        // Directly assign the message as innerHTML if it's a base64 image
-        newMessage.innerHTML = data.content;
-    } else {
-        // Otherwise, sanitize and process the message with marked
-        newMessage.innerHTML = DOMPurify.sanitize(marked.marked(`**${data.username}:**\n\n${data.content}`), dompurify_config);
-    }
-
-    newMessage.dataset.rawMarkdown = data.content;
-
-    // Create a container for the buttons
-    const buttonContainer = document.createElement("div");
-    buttonContainer.className = "button-container";
-
-    // Create the delete button
-    const deleteButton = document.createElement("button");
-    deleteButton.innerHTML = "x";
-    deleteButton.onclick = () => deleteMessage(data.id, room_name);
-    buttonContainer.appendChild(deleteButton);
-
-    // Create the edit button
-    const editButton = document.createElement("button");
-    editButton.textContent = "Edit";
-    editButton.className = "edit-button";
-    editButton.onclick = () => editMessage(data.id, newMessage);
-    buttonContainer.appendChild(editButton);
-
-    // Create the play button for TTS
-    const playButton = document.createElement("button");
-    playButton.textContent = "Play";
-    playButton.onclick = () => speakText(data.content, playButton, data.id);
-    buttonContainer.appendChild(playButton);
-
-    messageWrapper.appendChild(buttonContainer);
-    messageWrapper.appendChild(newMessage);
-
-    document.getElementById("chat").appendChild(messageWrapper);
-
-    // Apply syntax highlighting to code blocks within the message
-    newMessage.querySelectorAll("pre code").forEach((block) => {
-        addCopyButtonToCodeBlock(block);
-        truncateCodeBlock(block);
-        hljs.highlightElement(block);
-        addLineNumbers(block);
-    });
-
-    // Scroll to the bottom of the chat container
-    document.getElementById("chat").scrollTop = document.getElementById("chat").scrollHeight;
-
-});
-
-// Socket event for deleting a processing message
-socket.on("delete_processing_message", (msg_id) => {
-    const tempMessages = document.querySelectorAll("#message-null");
-    tempMessages.forEach((tempMessage) => {
-        tempMessage.remove();
-    });
-    // Clear the message buffer for the corresponding message ID
-    delete messageBuffers[msg_id];
-});
-
-// A dictionary to hold buffers for each message ID
-const messageBuffers = {};
-
-// Socket event for receiving chunks of a message
-socket.on("message_chunk", (data) => {
-    const wrapperId = "message-" + data.id;
-    let messageWrapper = document.getElementById(wrapperId);
-    let targetMessageElement;
-
-    // If the message wrapper doesn't exist, create it
-    if (!messageWrapper) {
-        messageWrapper = document.createElement("div");
-        messageWrapper.className = "message-wrapper";
-        messageWrapper.id = wrapperId;
-        document.getElementById("chat").appendChild(messageWrapper);
-    }
-
-    // If the message-content div doesn't exist, create it
-    if (!messageWrapper.querySelector(".message-content")) {
-        targetMessageElement = document.createElement("div");
-        targetMessageElement.className = "message-content";
-        messageWrapper.appendChild(targetMessageElement);
-    } else {
-        targetMessageElement = messageWrapper.querySelector(".message-content");
-    }
-
-    // If the message buffer for this ID doesn't exist, create it
-    if (!messageBuffers[data.id]) {
-        messageBuffers[data.id] = "";
-    }
-
-    // Append the chunk to the buffer
-    messageBuffers[data.id] += data.content;
-
-    // Process the entire buffer with marked and set it as the content of the target element
-    const sanitizedContent = DOMPurify.sanitize(marked.marked(messageBuffers[data.id]), dompurify_config);
-    targetMessageElement.innerHTML = sanitizedContent;
-
-    // Store the raw markdown in a data attribute for later use in editing
-    targetMessageElement.dataset.rawMarkdown = messageBuffers[data.id];
-
-    // Apply syntax highlighting to code blocks within the content
-    targetMessageElement.querySelectorAll("pre code").forEach((block) => {
-        addCopyButtonToCodeBlock(block);
-        hljs.highlightElement(block);
-        addLineNumbers(block);
-    });
-
-    // Scroll to the bottom of the chat container, but skip it if the user has scrolled up.
-    if (!userHasScrolledUp) {
-        document.getElementById("chat").scrollTop = document.getElementById("chat").scrollHeight;
-    }
-
-    // Check if the message is complete and add buttons if they haven't been added
-    if (data.is_complete && !messageWrapper.querySelector(".button-container")) {
-        // Create a container for the buttons
-        const buttonContainer = document.createElement("div");
-        buttonContainer.className = "button-container";
-
-        // Create the delete button
-        const deleteButton = document.createElement("button");
-        deleteButton.innerHTML = "x";
-        deleteButton.onclick = () => deleteMessage(data.id, room_name);
-        buttonContainer.appendChild(deleteButton);
-
-        // Create the edit button
-        const editButton = document.createElement("button");
-        editButton.textContent = "Edit";
-        editButton.className = "edit-button";
-        editButton.onclick = () => editMessage(data.id, targetMessageElement);
-        buttonContainer.appendChild(editButton);
-
-        // Create the play button for TTS
-        const playButton = document.createElement("button");
-        playButton.textContent = "Play";
-        playButton.onclick = () => {
-            const fullText = targetMessageElement.textContent || targetMessageElement.innerText;
-            speakText(fullText, playButton, data.id);
-        };
-        buttonContainer.appendChild(playButton);
-
-        // Append the button container before the message content
-        messageWrapper.insertBefore(buttonContainer, targetMessageElement);
-    }
-});
-
-
-// Socket event for when a message is deleted
-socket.on("message_deleted", (data) => {
-    const messageElement = document.getElementById("message-" + data.message_id);
-    if (messageElement) {
-        messageElement.remove();
-    }
-});
-
-// Socket event for when a message is updated
-socket.on("message_updated", (data) => {
-    // Find the existing message wrapper by ID
-    const messageWrapper = document.getElementById("message-" + data.message_id);
-
-    if (messageWrapper) {
-        // Find the specific element that contains the message content
-        const messageContentContainer = messageWrapper.querySelector(".message-content");
-
-        // Update the message content
-        if (data.content.startsWith('<img src="data:image/jpeg;base64')) {
-            // If it's a base64 image, set it directly
-            messageContentContainer.innerHTML = data.content;
-        } else {
-            // If it's not an image, sanitize and process the message with marked
-            messageContentContainer.innerHTML = DOMPurify.sanitize(marked.marked(data.content), dompurify_config);
-        }
-
-        // Update the raw markdown stored in the data attribute
-        messageContentContainer.dataset.rawMarkdown = data.content;
-
-        // Apply syntax highlighting and other functionalities to code blocks within the message
-        messageContentContainer.querySelectorAll("pre code").forEach((block) => {
-            addCopyButtonToCodeBlock(block);
-            truncateCodeBlock(block);
-            hljs.highlightElement(block);
-            addLineNumbers(block);
-        });
-    }
-});
-
-
-// Function to enter edit mode
-function editMessage(messageId, messageContentContainer) {
-    // Store the current HTML in a data attribute
-    messageContentContainer.dataset.originalHtml = messageContentContainer.innerHTML;
-    const rawMarkdown = messageContentContainer.dataset.rawMarkdown;
-
-    // Create a textarea for editing
-    const textarea = document.createElement("textarea");
-    textarea.value = rawMarkdown;
-    textarea.rows = 16;
-    textarea.className = "message-edit";
-
-    // Replace the message content with the textarea
-    messageContentContainer.innerHTML = '';
-    messageContentContainer.appendChild(textarea);
-
-    // Find the message wrapper to access the edit and save buttons
-    const messageWrapper = messageContentContainer.closest('.message-wrapper');
-
-    // Create a save button with the 'save-button' class
-    const saveButton = document.createElement("button");
-    saveButton.textContent = "Save";
-    saveButton.className = "save-button"; // Add the class here
-    saveButton.onclick = () => saveEditedMessage(messageId, textarea, messageContentContainer);
-
-    // Change the edit button to a cancel button
-    const editButton = messageWrapper.querySelector(".edit-button");
-    editButton.textContent = "Cancel";
-    editButton.onclick = () => cancelEdit(messageId, messageContentContainer);
-
-    // Append the save button next to the cancel button
-    editButton.after(saveButton);
-}
-
-// Function to save the edited message
-function saveEditedMessage(messageId, textarea, messageContentContainer) {
-    // Get the updated markdown from the textarea
-    const updatedMarkdown = textarea.value;
-
-    // Emit the update_message event to the server
-    socket.emit("update_message", {
-        "message_id": messageId,
-        "content": updatedMarkdown,
-        "room_name": room_name
-    });
-
-    // Clear the cached audio for this message to recompute TTS
-    if (audioCache[messageId]) {
-        delete audioCache[messageId];
-    }
-
-    // Reset the edit button to its original state
-    const messageWrapper = messageContentContainer.closest('.message-wrapper');
-    const editButton = messageWrapper.querySelector(".edit-button");
-    editButton.textContent = 'Edit';
-    editButton.onclick = () => editMessage(messageId, messageContentContainer, updatedMarkdown);
-
-    // Reset the play button to its initial state
-    const playButton = Array.from(messageWrapper.querySelectorAll("button")).find(btn => btn.textContent === 'Pause' || btn.textContent === 'Play');
-    if (playButton) {
-        playButton.textContent = 'Play';
-        playButton.onclick = () => speakText(updatedMarkdown, playButton, messageId); // Ensure it uses the updated content
-    }
-
-    // Remove the save button using the 'save-button' class
-    const saveButton = messageWrapper.querySelector(".save-button");
-    if (saveButton) {
-        saveButton.remove();
-    }
-}
-
-// Function to cancel the edit and revert changes
-function cancelEdit(messageId, messageContentContainer) {
-    // Restore the original HTML of the message content from the data attribute
-    messageContentContainer.innerHTML = messageContentContainer.dataset.originalHtml;
-
-    // Reset the edit button to its original state
-    const messageWrapper = messageContentContainer.closest('.message-wrapper');
-    const editButton = messageWrapper.querySelector(".edit-button");
-    editButton.textContent = 'Edit';
-    editButton.onclick = () => editMessage(messageId, messageContentContainer, messageContentContainer.dataset.rawMarkdown);
-
-    // Remove the save button using the 'save-button' class
-    const saveButton = messageWrapper.querySelector(".save-button");
-    if (saveButton) {
-        saveButton.remove();
-    }
-}
-
-
-function truncateCodeBlock(block, maxLines = 100) {
-    // Split the content by new lines and check if it exceeds the maxLines
-    const lines = block.textContent.split('\n');
-    if (lines.length > maxLines) {
-        // Store the full content in a data attribute
-        block.dataset.fullContent = block.textContent;
-
-        // Truncate the displayed content
-        const truncatedText = lines.slice(0, maxLines).join('\n') + '\n...';
-        block.textContent = truncatedText;
-
-        // Create a button to expand the code block
-        const expandButton = document.createElement('button');
-        expandButton.textContent = 'Show More';
-        expandButton.onclick = function() {
-            // Restore the full content from the data attribute
-            block.textContent = block.dataset.fullContent;
-            // Reapply syntax highlighting
-            hljs.highlightElement(block);
-            addLineNumbers(block);
-            // Change the button text to "Show Less"
-            expandButton.textContent = 'Show Less';
-            // Change the onclick function to truncate the block again
-            expandButton.onclick = function() {
-                block.textContent = truncatedText;
-                // Reapply syntax highlighting
-                hljs.highlightElement(block);
-                addLineNumbers(block);
-                // Change the button text back to "Show More"
-                expandButton.textContent = 'Show More';
-                // Set the onclick function back to the original expand function
-                expandButton.onclick = originalExpandFunction;
-            };
-        };
-
-        // Keep a reference to the original expand function
-        const originalExpandFunction = expandButton.onclick;
-
-        // Insert the expand button after the code block
-        block.parentNode.insertBefore(expandButton, block.nextSibling);
-    }
-}
-
-
-// Modify the addCopyButtonToCodeBlock function to use the full content
-function addCopyButtonToCodeBlock(block) {
-    // Check if the full content is stored in a data attribute, otherwise use textContent
-    const contentToCopy = block.dataset.fullContent || block.textContent;
-
-    // Create a button to copy the code block's content
-    const copyButton = document.createElement('button');
-    copyButton.textContent = 'Copy';
-    copyButton.classList.add('copy-button'); // Add a class for styling if needed
-    copyButton.onclick = function() {
-        // Copy the content to the clipboard
-        navigator.clipboard.writeText(contentToCopy).then(() => {
-            // Optionally, indicate that the text was copied
-            copyButton.textContent = 'Copied!';
-            setTimeout(() => {
-                copyButton.textContent = 'Copy';
-            }, 2000); // Reset button text after 2 seconds
-        }).catch(err => {
-            console.error('Error copying text: ', err);
-        });
-    };
-
-    // Insert the button before the code block
-    block.parentNode.insertBefore(copyButton, block);
-}
-
-function addLineNumbers(block) {
-    const lines = block.textContent.split('\n').length - 1;
-    const lineNumbersWrapper = document.createElement('div');
-    lineNumbersWrapper.className = 'line-numbers-rows';
-    for (let i = 0; i < lines; i++) {
-        lineNumbersWrapper.appendChild(document.createElement('span'));
-    }
-    block.appendChild(lineNumbersWrapper);
-}
-
-// Socket event for setting the chat background
-socket.on("set_background", (data) => {
-    const chat = document.getElementById("chat");
-    chat.style.backgroundImage = `url('data:image/png;base64,${data.image_data}')`;
-    chat.style.backgroundRepeat = "no-repeat";
-    chat.style.backgroundPosition = "right center";
-    chat.style.backgroundSize = "auto"; // Ensures the image is not stretched
-});
-
-</script>
-{% endblock %}
+    </script>
+</body>
+</html>
