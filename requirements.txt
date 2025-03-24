@@ -24,5 +24,7 @@ pyyaml
 # if you want to plot charts.
 matplotlib
 numpy
+
+psycopg2-binary
 transformers
 torch
