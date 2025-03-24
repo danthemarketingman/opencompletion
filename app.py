@@ -1,16 +1,19 @@
+import os
+import gevent
+from gevent import monkey
+
+# Monkey-patch at the very beginning to avoid SSL issues
+monkey.patch_all()
+
 from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, emit, join_room
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
-import gevent
-from gevent import monkey
-
-monkey.patch_all()
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = "your_secret_key"
-app.config["SQLALCHEMY_DATABASE_URI"] = "postgresql://chat_db_ndcz_user:7qu62Pvk3JKuub0fHdPc1hJoRHlfcBPf@dpg-cvgolhiqgecs73f04nh0-a/chat_db_ndcz"  # Paste your URL here
+app.config["SQLALCHEMY_DATABASE_URI"] = "postgresql://chat_db_ndcz_user:7qu62Pvk3JKuub0fHdPc1hJoRHlfcBPf@dpg-cvgolhiqgecs73f04nh0-a/chat_db_ndcz"  # Replace with your Render Postgres URL
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 db = SQLAlchemy(app)
@@ -48,11 +51,23 @@ class Message(db.Model):
     content = db.Column(db.Text, nullable=False)
     room_id = db.Column(db.Integer, db.ForeignKey('room.id'), nullable=False)
 
+# Set the cache directory for transformers
+os.environ["TRANSFORMERS_CACHE"] = "/opt/server/transformers_cache"
+
 # Load a local model (distilgpt2 for simplicity)
 model_name = "distilgpt2"
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForCausalLM.from_pretrained(model_name)
-nlp = pipeline("text-generation", model=model, tokenizer=tokenizer, max_new_tokens=50)
+try:
+    print(f"Loading tokenizer for {model_name}...")
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    print(f"Tokenizer loaded successfully.")
+    print(f"Loading model for {model_name}...")
+    model = AutoModelForCausalLM.from_pretrained(model_name)
+    print(f"Model loaded successfully.")
+    nlp = pipeline("text-generation", model=model, tokenizer=tokenizer, max_new_tokens=50)
+    print("Pipeline initialized successfully.")
+except Exception as e:
+    print(f"Failed to load model or tokenizer: {str(e)}")
+    raise
 
 def get_room(room_name):
     room = Room.query.filter_by(name=room_name).first()
